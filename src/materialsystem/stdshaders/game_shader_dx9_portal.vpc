@@ -24,5 +24,8 @@ $Project "Shaders (Portal)"
 	$File "portal_refract_helper.cpp"
 	$File "portalstaticoverlay.cpp"
 	
+	$File	"shadow.cpp"
+	$File	"shadowbuild_dx9.cpp"
+	
 	$File	"buildportalshaders.bat"
 }

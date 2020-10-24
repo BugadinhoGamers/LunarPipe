@@ -129,6 +129,10 @@ static ConVar r_shadow_deferred_simd( "r_shadow_deferred_simd", "0" );
 
 static ConVar r_shadow_debug_spew( "r_shadow_debug_spew", "0", FCVAR_CHEAT );
 
+// ConVars from stdshaders/shadow.cpp
+static ConVar r_shadow_rtt_mode( "r_shadow_rtt_mode", "1" );
+static ConVar r_shadow_rtt_farz( "r_shadow_rtt_farz", "100" );
+static ConVar r_shadow_pcss_scale_falloff( "r_shadow_pcss_scale_falloff", "10" );
 
 ConVar r_flashlightdepthtexture( "r_flashlightdepthtexture", "1" );
 
@@ -298,8 +302,27 @@ void CTextureAllocator::Init()
 void CTextureAllocator::InitRenderTargets( void )
 {
 #if !defined( _X360 )
-	// don't need depth buffer for shadows
-	m_TexturePage.InitRenderTarget( TEXTURE_PAGE_SIZE, TEXTURE_PAGE_SIZE, RT_SIZE_NO_CHANGE, IMAGE_FORMAT_ARGB8888, MATERIAL_RT_DEPTH_NONE, false, "_rt_Shadows" );
+	unsigned int textureFlags = TEXTUREFLAGS_CLAMPS | TEXTUREFLAGS_CLAMPT;
+
+	if ( r_shadow_rtt_mode.GetInt() != 0 )
+	{
+		// ES: Shadow shader implements software bilinear shadow sampling
+		textureFlags |= TEXTUREFLAGS_POINTSAMPLE;
+	}
+
+	// need depth buffer for shadows
+	ITexture* pShadowsRT = g_pMaterialSystem->CreateNamedRenderTargetTextureEx2(
+		"_rt_Shadows",
+		TEXTURE_PAGE_SIZE,
+		TEXTURE_PAGE_SIZE,
+		RT_SIZE_NO_CHANGE,
+		IMAGE_FORMAT_R32F,
+		MATERIAL_RT_DEPTH_SEPARATE,
+		textureFlags,
+		0
+	);
+
+	m_TexturePage.Init( pShadowsRT );
 #else
 	// unfortunate explicit management required for this render target
 	// 32bpp edram is only largest shadow fragment, but resolved to actual shadow atlas
@@ -2033,7 +2056,7 @@ const Vector &CClientShadowMgr::GetShadowDirection() const
 //-----------------------------------------------------------------------------
 float CClientShadowMgr::GetShadowDistance( IClientRenderable *pRenderable ) const
 {
-	float flDist = m_flShadowCastDist;
+	float flDist = GetShadowDistance();
 
 	// Allow the renderable to override the default
 	pRenderable->GetShadowCastDistance( &flDist, GetActualShadowCastType( pRenderable ) );
@@ -2206,6 +2229,9 @@ void CClientShadowMgr::SetShadowDistance( float flMaxDistance )
 
 float CClientShadowMgr::GetShadowDistance( ) const
 {
+	if ( r_shadow_rtt_mode.GetInt() == 4 ) // ES: soft shadows
+		return m_flShadowCastDist * r_shadow_pcss_scale_falloff.GetFloat();
+
 	return m_flShadowCastDist;
 }
 
@@ -5288,8 +5314,8 @@ bool CClientShadowMgr::DrawRenderToTextureShadow( int nSlot, unsigned short clie
 		m_ShadowAllocator.GetTextureRect( shadow.m_ShadowTexture, x, y, w, h );
 		pRenderContext->Viewport( IsX360() ? 0 : x, IsX360() ? 0 : y, w, h ); 
 
-		// Clear the selected viewport only (don't need to clear depth)
-		pRenderContext->ClearBuffers( true, false );
+		// Clear the selected viewport only (ES: also need to clear depth)
+		pRenderContext->ClearBuffers( true, true );
 
 		pRenderContext->MatrixMode( MATERIAL_VIEW );
 		pRenderContext->LoadMatrix( shadow.m_WorldToTexture );
@@ -5748,8 +5774,8 @@ void CClientShadowMgr::ComputeShadowTextures( const CViewSetup &view, int leafCo
 
 	PIXEVENT( pRenderContext, "Render-To-Texture Shadows" );
 
-	// Clear to white (color unused), black alpha
-	pRenderContext->ClearColor4ub( 255, 255, 255, 0 );
+	// ES: Clear color and alpha to black
+	pRenderContext->ClearColor4ub( 0, 0, 0, 0 );
 
 	// No height clip mode please.
 	MaterialHeightClipMode_t oldHeightClipMode = pRenderContext->GetHeightClipMode();
@@ -5760,8 +5786,13 @@ void CClientShadowMgr::ComputeShadowTextures( const CViewSetup &view, int leafCo
 	pRenderContext->MatrixMode( MATERIAL_PROJECTION );
 	pRenderContext->PushMatrix();
 	pRenderContext->LoadIdentity();
+
+	// This gives us a depth buffer with inverted values,
+	// so we pass negative farZ as nearZ.
+	// The vertex shader (shadowbuildtexture_vs20.fxc) will
+	// un-invert the depth.
 	pRenderContext->Scale( 1, -1, 1 );
-	pRenderContext->Ortho( 0, 0, 1, 1, -9999, 0 );
+	pRenderContext->Ortho( 0, 0, 1, 1, -(r_shadow_rtt_farz.GetFloat()), 0 );
 
 	pRenderContext->MatrixMode( MATERIAL_VIEW );
 	pRenderContext->PushMatrix();
@@ -5770,8 +5801,8 @@ void CClientShadowMgr::ComputeShadowTextures( const CViewSetup &view, int leafCo
 
 	if ( !IsX360() && m_bRenderTargetNeedsClear )
 	{
-		// don't need to clear absent depth buffer
-		pRenderContext->ClearBuffers( true, false );
+		// ES: need to clear the depth buffer too
+		pRenderContext->ClearBuffers( true, true );
 		m_bRenderTargetNeedsClear = false;
 	}
 
